@@ -1,5 +1,5 @@
 import Booking from "../models/Booking.js";
-import { sendBookingEmail } from "../config/mailer.js";
+import { sendBookingNotifications } from "../config/mailer.js";
 import {
   appendBookingToSheet,
   resetBookingSheet,
@@ -9,7 +9,6 @@ import {
   availabilityQuerySchema,
   cancelSchema,
   createBookingSchema,
-  formatDate,
   getDefaultAvailabilityRange,
   normalizeCode,
   normalizeEmail,
@@ -77,6 +76,13 @@ const buildClientLookupCriteria = (identifier) => {
   return { bookingCode: code };
 };
 
+const getLookupMode = (identifier) => {
+  const trimmed = String(identifier ?? "").trim();
+  if (looksLikeEmail(trimmed)) return "email";
+  if (looksLikePhone(trimmed)) return "phone";
+  return "code";
+};
+
 const buildHistoryCriteria = (booking, fallbackIdentifier) => {
   const phoneRegex = phoneDigitsRegex(booking.phone);
   if (booking.phone && phoneRegex) return { phone: phoneRegex };
@@ -142,27 +148,16 @@ export const createBooking = async (req, res, next) => {
     });
 
     await appendBookingToSheet(newBooking);
-
-    if (newBooking.email) {
-      await sendBookingEmail(
-        newBooking.studentName,
-        newBooking.email,
-        formatDate(startTime),
-        newBooking.bookingCode,
-        {
-          responsibleName: newBooking.responsibleName,
-          subject: newBooking.subject,
-          educationLevel: newBooking.educationLevel,
-          yearGrade: newBooking.yearGrade,
-          school: newBooking.school,
-        },
-      );
-    }
+    const notifications = await sendBookingNotifications({
+      booking: newBooking,
+      event: "created",
+    });
 
     res.status(201).json({
       success: true,
       message: "Reserva confirmada con exito.",
       data: publicBooking(newBooking),
+      notifications,
     });
   } catch (error) {
     if (error?.code === 11000) {
@@ -232,6 +227,7 @@ export const getBookingByCode = async (req, res, next) => {
       return badRequest(res, "Ingresa un codigo, email o WhatsApp valido.");
     }
 
+    const lookupMode = getLookupMode(identifier);
     const keyBooking = await Booking.findOne(buildClientLookupCriteria(identifier));
     if (!keyBooking) {
       return res.status(404).json({
@@ -240,7 +236,10 @@ export const getBookingByCode = async (req, res, next) => {
       });
     }
 
-    const searchCriteria = buildHistoryCriteria(keyBooking, identifier);
+    const searchCriteria =
+      lookupMode === "code"
+        ? { bookingCode: keyBooking.bookingCode }
+        : buildHistoryCriteria(keyBooking, identifier);
 
     const history = await Booking.find(searchCriteria).sort({ timeSlot: -1 });
     res.status(200).json({
@@ -338,29 +337,16 @@ export const rescheduleBooking = async (req, res, next) => {
     await booking.save();
 
     await updateBookingInSheet(booking);
-
-    if (booking.email) {
-      await sendBookingEmail(
-        booking.studentName,
-        booking.email,
-        formatDate(startTime),
-        booking.bookingCode,
-        {
-          responsibleName: booking.responsibleName,
-          subject: booking.subject,
-          educationLevel: booking.educationLevel,
-          yearGrade: booking.yearGrade,
-          school: booking.school,
-          title: "Turno Reprogramado",
-          intro: "Tu clase particular fue reprogramada correctamente.",
-        },
-      );
-    }
+    const notifications = await sendBookingNotifications({
+      booking,
+      event: "rescheduled",
+    });
 
     res.status(200).json({
       success: true,
       message: "Turno reprogramado.",
       data: publicBooking(booking),
+      notifications,
     });
   } catch (error) {
     if (typeof next === "function") return next(error);
@@ -386,11 +372,16 @@ export const cancelBookingClient = async (req, res, next) => {
     booking.status = "Cancelado";
     await booking.save();
     await updateBookingInSheet(booking);
+    const notifications = await sendBookingNotifications({
+      booking,
+      event: "cancelled",
+    });
 
     res.status(200).json({
       success: true,
       message: "Turno cancelado.",
       data: publicBooking(booking),
+      notifications,
     });
   } catch (error) {
     if (typeof next === "function") return next(error);

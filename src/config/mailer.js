@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import { formatDate } from "../utils/bookingRules.js";
 
 const escapeHtml = (value) =>
   String(value ?? "")
@@ -20,6 +21,30 @@ const getTransporter = () =>
       pass: process.env.EMAIL_PASS,
     },
   });
+
+const getNotificationCopy = (event) => {
+  switch (event) {
+    case "rescheduled":
+      return {
+        title: "Turno Reprogramado",
+        intro: "Tu clase particular fue reprogramada correctamente.",
+        ownerLabel: "Turno reprogramado",
+      };
+    case "cancelled":
+      return {
+        title: "Turno Cancelado",
+        intro: "Tu clase particular fue cancelada correctamente.",
+        ownerLabel: "Turno cancelado",
+      };
+    case "created":
+    default:
+      return {
+        title: "Reserva Confirmada",
+        intro: "La clase particular ha sido agendada exitosamente.",
+        ownerLabel: "Nueva reserva",
+      };
+  }
+};
 
 export const sendBookingEmail = async (
   studentName,
@@ -134,5 +159,78 @@ export const sendBookingEmail = async (
   } catch (error) {
     console.error("Email error:", error.message);
     return false;
+  }
+};
+
+export const sendBookingNotifications = async ({ booking, event = "created" }) => {
+  const copy = getNotificationCopy(event);
+  const formattedDate = formatDate(booking.timeSlot);
+
+  const clientEmailSent = booking.email
+    ? await sendBookingEmail(
+        booking.studentName,
+        booking.email,
+        formattedDate,
+        booking.bookingCode,
+        {
+          responsibleName: booking.responsibleName,
+          subject: booking.subject,
+          educationLevel: booking.educationLevel,
+          yearGrade: booking.yearGrade,
+          school: booking.school,
+          title: copy.title,
+          intro: copy.intro,
+        },
+      )
+    : false;
+
+  const ownerEmail = String(process.env.OWNER_NOTIFICATION_EMAIL ?? "").trim();
+  if (!ownerEmail || !canSendEmail()) {
+    return {
+      clientEmailSent,
+      ownerEmailSent: false,
+    };
+  }
+
+  try {
+    const safe = {
+      ownerLabel: escapeHtml(copy.ownerLabel),
+      studentName: escapeHtml(booking.studentName),
+      responsibleName: escapeHtml(booking.responsibleName),
+      subject: escapeHtml(booking.subject),
+      date: escapeHtml(formattedDate),
+      phone: escapeHtml(booking.phone || "-"),
+      email: escapeHtml(booking.email || "-"),
+      code: escapeHtml(booking.bookingCode),
+    };
+
+    await getTransporter().sendMail({
+      from: `"Clases Agustin" <${process.env.EMAIL_USER}>`,
+      to: ownerEmail,
+      subject: `${safe.ownerLabel}: ${safe.studentName} - ${safe.date}`,
+      html: `
+        <div style="font-family: Helvetica, Arial, sans-serif; color: #1f2937; line-height: 1.6;">
+          <h2 style="margin-bottom: 8px;">${safe.ownerLabel}</h2>
+          <p><strong>Alumno:</strong> ${safe.studentName}</p>
+          <p><strong>Responsable:</strong> ${safe.responsibleName}</p>
+          <p><strong>Materia:</strong> ${safe.subject}</p>
+          <p><strong>Fecha:</strong> ${safe.date}</p>
+          <p><strong>WhatsApp:</strong> ${safe.phone}</p>
+          <p><strong>Email:</strong> ${safe.email}</p>
+          <p><strong>Codigo:</strong> ${safe.code}</p>
+        </div>
+      `,
+    });
+
+    return {
+      clientEmailSent,
+      ownerEmailSent: true,
+    };
+  } catch (error) {
+    console.error("Owner notification error:", error.message);
+    return {
+      clientEmailSent,
+      ownerEmailSent: false,
+    };
   }
 };
