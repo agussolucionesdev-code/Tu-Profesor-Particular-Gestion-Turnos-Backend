@@ -16,8 +16,28 @@ services:
         value: "1"
       - key: RATE_LIMIT_MAX
         value: "200"
+      - key: AUTH_RATE_LIMIT_MAX
+        value: "10"
+      - key: PUBLIC_LOOKUP_RATE_LIMIT_MAX
+        value: "40"
+      - key: PUBLIC_MUTATION_RATE_LIMIT_MAX
+        value: "30"
       - key: JWT_EXPIRES_IN
         value: 8h
+      - key: JWT_ISSUER
+        value: tu-profesor-particular-backend
+      - key: JWT_AUDIENCE
+        value: tu-profesor-particular-admin
+      - key: MONGO_FALLBACK_TO_MEMORY
+        value: "false"
+      - key: MAX_AVAILABILITY_RANGE_DAYS
+        value: "120"
+      - key: SERVER_REQUEST_TIMEOUT_MS
+        value: "15000"
+      - key: SERVER_HEADERS_TIMEOUT_MS
+        value: "20000"
+      - key: SERVER_KEEP_ALIVE_TIMEOUT_MS
+        value: "5000"
       - key: MONGO_URI
         sync: false
       - key: JWT_SECRET

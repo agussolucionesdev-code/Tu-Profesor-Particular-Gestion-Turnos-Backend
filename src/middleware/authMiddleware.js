@@ -12,12 +12,28 @@ export const requireAdmin = (req, res, next) => {
   }
 
   try {
-    req.user = verifyAdminToken(token);
+    const user = verifyAdminToken(token);
+
+    if (user?.role !== "admin") {
+      return res.status(403).json({
+        success: false,
+        message: "No tienes permisos para realizar esta acción.",
+        requestId: req.requestId,
+      });
+    }
+
+    req.user = {
+      id: user.sub,
+      role: user.role,
+      username: user.username,
+    };
+    res.setHeader("Cache-Control", "no-store");
     return next();
   } catch {
     return res.status(401).json({
       success: false,
       message: "Sesion vencida o invalida.",
+      requestId: req.requestId,
     });
   }
 };

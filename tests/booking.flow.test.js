@@ -9,6 +9,9 @@ let mongoServer;
 let Booking;
 let User;
 
+const getMemoryLaunchTimeout = () =>
+  Number(process.env.MONGO_MEMORY_LAUNCH_TIMEOUT_MS || 30000);
+
 const formatForApi = (date) => {
   const day = String(date.getDate()).padStart(2, "0");
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -27,6 +30,8 @@ const tomorrowAt = (hour, minute = 0) => {
 
 const validBookingPayload = (overrides = {}) => ({
   responsibleName: "Maria Perez",
+  responsibleRelationship: "madre",
+  responsibleRelationshipOther: "",
   studentName: "Juan Perez",
   tutorName: "Agustin",
   email: "familia@example.com",
@@ -57,7 +62,11 @@ const createAdminAndLogin = async () => {
 
 beforeAll(async () => {
   process.env.JWT_SECRET = "test-secret";
-  mongoServer = await MongoMemoryServer.create();
+  mongoServer = await MongoMemoryServer.create({
+    instance: {
+      launchTimeout: getMemoryLaunchTimeout(),
+    },
+  });
   await mongoose.connect(mongoServer.getUri());
 
   app = (await import("../src/app.js")).default;
@@ -84,6 +93,7 @@ describe("booking flows", () => {
 
     expect(created.body.data.bookingCode).toMatch(/^[A-Z0-9]{6}$/);
     expect(created.body.data.email).toBe("familia@example.com");
+    expect(created.body.data.responsibleRelationship).toBe("madre");
 
     const availability = await request(app)
       .get("/api/bookings/availability")
@@ -120,10 +130,43 @@ describe("booking flows", () => {
     expect(byPhone.body.data[0].bookingCode).toBe(bookingCode);
   });
 
+  it("allows loopback dev origins and blocks unknown origins with 403", async () => {
+    const allowedPreflight = await request(app)
+      .options("/api/bookings/reserve")
+      .set("Origin", "http://localhost:4173")
+      .set("Access-Control-Request-Method", "POST")
+      .set("Access-Control-Request-Headers", "content-type")
+      .expect(204);
+
+    expect(allowedPreflight.headers["access-control-allow-origin"]).toBe(
+      "http://localhost:4173",
+    );
+
+    const deniedPreflight = await request(app)
+      .options("/api/bookings/reserve")
+      .set("Origin", "http://evil.example.com")
+      .set("Access-Control-Request-Method", "POST")
+      .set("Access-Control-Request-Headers", "content-type")
+      .expect(403);
+
+    expect(deniedPreflight.body.success).toBe(false);
+    expect(deniedPreflight.body.message).toBe("Origin not allowed by CORS");
+  });
+
   it("rejects invalid public booking requests and overlapping turns", async () => {
     await request(app)
       .post("/api/bookings/reserve")
       .send(validBookingPayload({ email: "", phone: "" }))
+      .expect(400);
+
+    await request(app)
+      .post("/api/bookings/reserve")
+      .send(
+        validBookingPayload({
+          responsibleRelationship: "otro",
+          responsibleRelationshipOther: "",
+        }),
+      )
       .expect(400);
 
     await request(app)
@@ -180,6 +223,26 @@ describe("booking flows", () => {
 
     expect(adminList.body.data).toHaveLength(1);
     expect(adminList.body.data[0].email).toBe("familia@example.com");
+  });
+
+  it("rejects oversized availability ranges and invalid admin ids", async () => {
+    const farFuture = tomorrowAt(8);
+    farFuture.setDate(farFuture.getDate() + 180);
+
+    await request(app)
+      .get("/api/bookings/availability")
+      .query({
+        from: formatForApi(tomorrowAt(8)),
+        to: formatForApi(farFuture),
+      })
+      .expect(400);
+
+    const token = await createAdminAndLogin();
+    await request(app)
+      .put("/api/bookings/not-a-valid-id")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ status: "Confirmado" })
+      .expect(400);
   });
 
   it("lets a client reschedule and cancel with the booking code", async () => {

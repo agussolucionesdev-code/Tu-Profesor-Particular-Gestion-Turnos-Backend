@@ -11,19 +11,23 @@ import {
   cancelBookingClient,
 } from "../controllers/bookingController.js";
 import { requireAdmin } from "../middleware/authMiddleware.js";
+import {
+  publicLookupLimiter,
+  publicMutationLimiter,
+} from "../middleware/rateLimiters.js";
 
 const router = express.Router();
 
-router.post("/reserve", createBooking);
+router.post("/reserve", publicMutationLimiter, createBooking);
 router.get("/availability", getAvailability);
-router.post("/reschedule", rescheduleBooking);
-router.post("/cancel", cancelBookingClient);
+router.post("/reschedule", publicMutationLimiter, rescheduleBooking);
+router.post("/cancel", publicMutationLimiter, cancelBookingClient);
 
 router.get("/", requireAdmin, getAllBookings);
 router.delete("/all", requireAdmin, deleteAllBookings);
 router.delete("/:id", requireAdmin, deleteBooking);
 router.put("/:id", requireAdmin, updateBooking);
 
-router.get("/:code", getBookingByCode);
+router.get("/:code", publicLookupLimiter, getBookingByCode);
 
 export default router;

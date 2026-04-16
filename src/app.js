@@ -2,18 +2,34 @@ import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
 import helmet from "helmet";
-import rateLimit from "express-rate-limit";
 import mongoose from "mongoose";
+import { getDbConnectionMeta } from "./config/db.js";
 import bookingRoutes from "./routes/bookingRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
+import { globalApiLimiter } from "./middleware/rateLimiters.js";
+import { requestContextMiddleware } from "./middleware/requestContext.js";
 
 if (process.env.NODE_ENV !== "test") {
   dotenv.config();
 }
 
 const app = express();
+const isProduction = process.env.NODE_ENV === "production";
+const MAX_JSON_BODY_SIZE = "50kb";
 
 const normalizeOrigin = (value) => String(value || "").trim().replace(/\/$/, "");
+const isLoopbackOrigin = (origin) => {
+  try {
+    const { protocol, hostname } = new URL(origin);
+
+    return (
+      /^https?:$/.test(protocol) &&
+      ["localhost", "127.0.0.1", "::1", "[::1]"].includes(hostname)
+    );
+  } catch {
+    return false;
+  }
+};
 const parseTrustProxy = (value) => {
   if (value === undefined || value === null || value === "") {
     return process.env.NODE_ENV === "production" ? 1 : false;
@@ -45,21 +61,35 @@ const configuredOrigins = (process.env.CORS_ORIGIN || process.env.FRONTEND_URL |
   .map(normalizeOrigin)
   .filter(Boolean);
 const defaultDevOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
   "http://localhost:5174",
   "http://127.0.0.1:5174",
+  "http://localhost:4173",
+  "http://127.0.0.1:4173",
   "http://localhost:4174",
   "http://127.0.0.1:4174",
   "http://localhost:3000",
   "http://127.0.0.1:3000",
 ];
-const allowedOrigins = [...new Set([...configuredOrigins, ...defaultDevOrigins])];
+const allowedOrigins = [
+  ...new Set([...configuredOrigins, ...(isProduction ? [] : defaultDevOrigins)]),
+];
 const trustProxy = parseTrustProxy(process.env.TRUST_PROXY);
+const isDevelopmentLoopback = !isProduction;
 
 if (trustProxy !== false) {
   app.set("trust proxy", trustProxy);
 }
 
-app.use(helmet());
+app.disable("x-powered-by");
+
+app.use(requestContextMiddleware);
+app.use(
+  helmet({
+    referrerPolicy: { policy: "no-referrer" },
+  }),
+);
 app.use(
   cors({
     origin(origin, callback) {
@@ -67,36 +97,43 @@ app.use(
 
       if (
         !origin ||
-        allowedOrigins.length === 0 ||
-        allowedOrigins.includes(normalizedOrigin)
+        allowedOrigins.includes(normalizedOrigin) ||
+        (isDevelopmentLoopback && isLoopbackOrigin(origin))
       ) {
         return callback(null, true);
       }
-      return callback(new Error("Origin not allowed by CORS"));
+      const corsError = new Error("Origin not allowed by CORS");
+      corsError.statusCode = 403;
+      corsError.expose = true;
+      return callback(corsError);
     },
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Request-Id"],
+    maxAge: 60 * 60 * 12,
   }),
 );
-app.use(
-  rateLimit({
-    windowMs: 15 * 60 * 1000,
-    limit: Number(process.env.RATE_LIMIT_MAX || 200),
-    standardHeaders: true,
-    legacyHeaders: false,
-  }),
-);
-app.use(express.json({ limit: "50kb" }));
+app.use(globalApiLimiter);
+app.use(express.json({ limit: MAX_JSON_BODY_SIZE, strict: true }));
+app.use(express.urlencoded({ extended: false, limit: "10kb" }));
 
 app.get("/health", (req, res) => {
   const dbHealth = getDbHealth();
+  const dbMeta = getDbConnectionMeta();
 
   res.status(dbHealth.isConnected ? 200 : 503).json({
     status: dbHealth.isConnected ? "success" : "error",
     message: "Agustin Sosa Pro-API is operational",
     environment: process.env.NODE_ENV || "development",
     timestamp: new Date().toISOString(),
-    database: dbHealth,
+    requestId: req.requestId,
+    database: {
+      ...dbHealth,
+      driver: dbMeta.driver,
+      persistent: dbMeta.persistent,
+      mode: dbMeta.mode,
+      source: dbMeta.source,
+      target: dbMeta.target,
+    },
   });
 });
 
@@ -107,19 +144,27 @@ app.use((req, res) => {
   res.status(404).json({
     success: false,
     message: "The requested resource was not found on this server.",
+    requestId: req.requestId,
   });
 });
 
 app.use((err, req, res, next) => {
   const statusCode = err.statusCode || 500;
-
-  console.error(`[SYSTEM ERROR]: ${err.message}`);
-
-  res.status(statusCode).json({
+  const expose = err.expose ?? statusCode < 500;
+  const requestId = req.requestId || "unknown-request";
+  const payload = {
     success: false,
-    message: err.message || "Internal Server Error",
-    stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
-  });
+    message: expose ? err.message || "Request failed." : "Internal Server Error",
+    requestId,
+  };
+
+  console.error(`[SYSTEM ERROR] [${requestId}]`, err);
+
+  if (process.env.NODE_ENV === "development") {
+    payload.stack = err.stack;
+  }
+
+  res.status(statusCode).json(payload);
 });
 
 export default app;

@@ -1,7 +1,9 @@
+import mongoose from "mongoose";
 import Booking from "../models/Booking.js";
 import { sendBookingNotifications } from "../config/mailer.js";
 import {
   appendBookingToSheet,
+  deleteBookingFromSheet,
   resetBookingSheet,
   updateBookingInSheet,
 } from "../services/sheetsService.js";
@@ -10,11 +12,11 @@ import {
   cancelSchema,
   createBookingSchema,
   getDefaultAvailabilityRange,
+  looksLikeEmail,
+  looksLikePhone,
   normalizeCode,
   normalizeEmail,
   normalizePhone,
-  looksLikeEmail,
-  looksLikePhone,
   parseDateTimeInput,
   phoneDigitsRegex,
   rescheduleSchema,
@@ -24,11 +26,18 @@ import {
 } from "../utils/bookingRules.js";
 
 const activeStatusFilter = { status: { $ne: "Cancelado" } };
+const MAX_AVAILABILITY_RANGE_DAYS = Number(
+  process.env.MAX_AVAILABILITY_RANGE_DAYS || 120,
+);
+const MAX_AVAILABILITY_RANGE_MS =
+  MAX_AVAILABILITY_RANGE_DAYS * 24 * 60 * 60 * 1000;
 
 const publicBooking = (booking) => ({
   _id: booking._id,
   bookingCode: booking.bookingCode,
   responsibleName: booking.responsibleName,
+  responsibleRelationship: booking.responsibleRelationship,
+  responsibleRelationshipOther: booking.responsibleRelationshipOther,
   studentName: booking.studentName,
   tutorName: booking.tutorName,
   phone: booking.phone,
@@ -46,11 +55,25 @@ const publicBooking = (booking) => ({
   updatedAt: booking.updatedAt,
 });
 
+const setNoStore = (res) => {
+  res.setHeader("Cache-Control", "no-store");
+};
+
+const trustedFilter = (filter) => mongoose.trusted(filter);
+
 const badRequest = (res, message, details) =>
   res.status(400).json({
     success: false,
     message,
     details,
+    requestId: res.req.requestId,
+  });
+
+const notFound = (res, message) =>
+  res.status(404).json({
+    success: false,
+    message,
+    requestId: res.req.requestId,
   });
 
 const hasConflict = async (startTime, endTime, excludeId = null) => {
@@ -60,9 +83,11 @@ const hasConflict = async (startTime, endTime, excludeId = null) => {
     endTime: { $gt: startTime },
   };
 
-  if (excludeId) criteria._id = { $ne: excludeId };
+  if (excludeId) {
+    criteria._id = { $ne: excludeId };
+  }
 
-  return Booking.exists(criteria);
+  return Booking.exists(trustedFilter(criteria));
 };
 
 const buildClientLookupCriteria = (identifier) => {
@@ -71,43 +96,84 @@ const buildClientLookupCriteria = (identifier) => {
   const phoneRegex = phoneDigitsRegex(trimmed);
   const code = normalizeCode(trimmed);
 
-  if (looksLikeEmail(trimmed)) return { email };
-  if (looksLikePhone(trimmed) && phoneRegex) return { phone: phoneRegex };
+  if (looksLikeEmail(trimmed)) {
+    return { email };
+  }
+
+  if (looksLikePhone(trimmed) && phoneRegex) {
+    return { phone: phoneRegex };
+  }
+
   return { bookingCode: code };
 };
 
 const getLookupMode = (identifier) => {
   const trimmed = String(identifier ?? "").trim();
-  if (looksLikeEmail(trimmed)) return "email";
-  if (looksLikePhone(trimmed)) return "phone";
+
+  if (looksLikeEmail(trimmed)) {
+    return "email";
+  }
+
+  if (looksLikePhone(trimmed)) {
+    return "phone";
+  }
+
   return "code";
 };
 
 const buildHistoryCriteria = (booking, fallbackIdentifier) => {
   const phoneRegex = phoneDigitsRegex(booking.phone);
-  if (booking.phone && phoneRegex) return { phone: phoneRegex };
-  if (booking.email) return { email: booking.email };
+
+  if (booking.phone && phoneRegex) {
+    return { phone: phoneRegex };
+  }
+
+  if (booking.email) {
+    return { email: booking.email };
+  }
+
   return buildClientLookupCriteria(fallbackIdentifier);
 };
+
+const isManageableByClient = (booking) =>
+  booking.status !== "Cancelado" &&
+  booking.status !== "Finalizado" &&
+  new Date(booking.endTime).getTime() > Date.now();
 
 const normalizeBookingPayload = (payload) => ({
   ...payload,
   email: normalizeEmail(payload.email),
   phone: normalizePhone(payload.phone),
+  responsibleRelationship: String(payload.responsibleRelationship ?? "")
+    .trim()
+    .toLowerCase(),
+  responsibleRelationshipOther: String(payload.responsibleRelationshipOther ?? "")
+    .trim(),
   tutorName: payload.tutorName?.trim() || "Agustin",
 });
 
 const parseAvailabilityRange = (query) => {
   const parsed = availabilityQuerySchema.safeParse(query);
-  if (!parsed.success) return null;
+  if (!parsed.success) {
+    return null;
+  }
 
   const defaults = getDefaultAvailabilityRange();
   const from = parsed.data.from ? parseDateTimeInput(parsed.data.from) : defaults.from;
   const to = parsed.data.to ? parseDateTimeInput(parsed.data.to) : defaults.to;
 
-  if (!from || !to || from > to) return null;
+  if (!from || !to || from > to) {
+    return null;
+  }
+
+  if (to.getTime() - from.getTime() > MAX_AVAILABILITY_RANGE_MS) {
+    return null;
+  }
+
   return { from, to };
 };
+
+const isValidObjectId = (value) => mongoose.isValidObjectId(value);
 
 export const createBooking = async (req, res, next) => {
   try {
@@ -118,19 +184,27 @@ export const createBooking = async (req, res, next) => {
 
     const payload = normalizeBookingPayload(parsed.data);
     const contactError = validateContact(payload);
-    if (contactError) return badRequest(res, contactError);
+    if (contactError) {
+      return badRequest(res, contactError);
+    }
 
     const startTime = parseDateTimeInput(payload.timeSlot);
     const duration = Number(payload.duration);
     const slotError = validateSlot(startTime, duration);
-    if (slotError) return badRequest(res, slotError);
+    if (slotError) {
+      return badRequest(res, slotError);
+    }
 
     const endTime = new Date(startTime.getTime() + duration * 60 * 60 * 1000);
     const conflict = await hasConflict(startTime, endTime);
-    if (conflict) return badRequest(res, "Horario ocupado.");
+    if (conflict) {
+      return badRequest(res, "Horario ocupado.");
+    }
 
     const newBooking = await Booking.create({
       responsibleName: payload.responsibleName,
+      responsibleRelationship: payload.responsibleRelationship,
+      responsibleRelationshipOther: payload.responsibleRelationshipOther,
       studentName: payload.studentName,
       tutorName: payload.tutorName,
       email: payload.email,
@@ -158,30 +232,48 @@ export const createBooking = async (req, res, next) => {
       message: "Reserva confirmada con exito.",
       data: publicBooking(newBooking),
       notifications,
+      requestId: req.requestId,
     });
   } catch (error) {
     if (error?.code === 11000) {
       return res.status(409).json({
         success: false,
         message: "No se pudo generar un codigo unico. Intenta nuevamente.",
+        requestId: req.requestId,
       });
     }
-    if (typeof next === "function") return next(error);
-    return res.status(500).json({ success: false, message: error.message });
+
+    if (typeof next === "function") {
+      return next(error);
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Error interno del servidor.",
+      requestId: req.requestId,
+    });
   }
 };
 
 export const getAvailability = async (req, res, next) => {
   try {
     const range = parseAvailabilityRange(req.query);
-    if (!range) return badRequest(res, "Rango de disponibilidad invalido.");
+    if (!range) {
+      return badRequest(
+        res,
+        `Rango de disponibilidad invalido. Usa un intervalo maximo de ${MAX_AVAILABILITY_RANGE_DAYS} dias.`,
+      );
+    }
 
-    const bookings = await Booking.find({
-      ...activeStatusFilter,
-      timeSlot: { $lte: range.to },
-      endTime: { $gte: range.from },
-    })
+    const bookings = await Booking.find(
+      trustedFilter({
+        ...activeStatusFilter,
+        timeSlot: { $lte: range.to },
+        endTime: { $gte: range.from },
+      }),
+    )
       .select("timeSlot endTime duration status")
+      .lean()
       .sort({ timeSlot: 1 });
 
     res.status(200).json({
@@ -194,24 +286,43 @@ export const getAvailability = async (req, res, next) => {
         duration: booking.duration,
         status: booking.status,
       })),
+      requestId: req.requestId,
     });
   } catch (error) {
-    if (typeof next === "function") return next(error);
-    return res.status(500).json({ success: false, message: error.message });
+    if (typeof next === "function") {
+      return next(error);
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Error interno del servidor.",
+      requestId: req.requestId,
+    });
   }
 };
 
 export const getAllBookings = async (req, res, next) => {
   try {
-    const bookings = await Booking.find().sort({ timeSlot: -1 });
+    setNoStore(res);
+
+    const bookings = await Booking.find().sort({ timeSlot: -1 }).lean();
+
     res.status(200).json({
       success: true,
       count: bookings.length,
       data: bookings,
+      requestId: req.requestId,
     });
   } catch (error) {
-    if (typeof next === "function") return next(error);
-    return res.status(500).json({ success: false, message: error.message });
+    if (typeof next === "function") {
+      return next(error);
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Error interno del servidor.",
+      requestId: req.requestId,
+    });
   }
 };
 
@@ -224,16 +335,14 @@ export const getBookingByCode = async (req, res, next) => {
       looksLikePhone(identifier);
 
     if (!isValidLookup) {
-      return badRequest(res, "Ingresa un codigo, email o WhatsApp valido.");
+      return badRequest(res, "Ingresa un codigo, email o telefono valido.");
     }
 
     const lookupMode = getLookupMode(identifier);
-    const keyBooking = await Booking.findOne(buildClientLookupCriteria(identifier));
+    const keyBooking = await Booking.findOne(buildClientLookupCriteria(identifier)).lean();
+
     if (!keyBooking) {
-      return res.status(404).json({
-        success: false,
-        message: "No encontramos ninguna reserva.",
-      });
+      return notFound(res, "No encontramos ninguna reserva.");
     }
 
     const searchCriteria =
@@ -241,19 +350,33 @@ export const getBookingByCode = async (req, res, next) => {
         ? { bookingCode: keyBooking.bookingCode }
         : buildHistoryCriteria(keyBooking, identifier);
 
-    const history = await Booking.find(searchCriteria).sort({ timeSlot: -1 });
+    const history = await Booking.find(searchCriteria).sort({ timeSlot: -1 }).lean();
+
+    setNoStore(res);
     res.status(200).json({
       success: true,
       data: history.map(publicBooking),
+      requestId: req.requestId,
     });
   } catch (error) {
-    if (typeof next === "function") return next(error);
-    return res.status(500).json({ success: false, message: error.message });
+    if (typeof next === "function") {
+      return next(error);
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Error interno del servidor.",
+      requestId: req.requestId,
+    });
   }
 };
 
 export const updateBooking = async (req, res, next) => {
   try {
+    if (!isValidObjectId(req.params.id)) {
+      return badRequest(res, "Identificador de reserva invalido.");
+    }
+
     const parsed = updateBookingSchema.safeParse(req.body);
     if (!parsed.success) {
       return badRequest(res, "Datos de actualizacion invalidos.", parsed.error.flatten());
@@ -265,27 +388,59 @@ export const updateBooking = async (req, res, next) => {
     });
 
     if (!updatedBooking) {
-      return res.status(404).json({ success: false, message: "Reserva no encontrada." });
+      return notFound(res, "Reserva no encontrada.");
     }
 
     await updateBookingInSheet(updatedBooking);
-    res.status(200).json({ success: true, data: updatedBooking });
+
+    setNoStore(res);
+    res.status(200).json({
+      success: true,
+      data: updatedBooking,
+      requestId: req.requestId,
+    });
   } catch (error) {
-    if (typeof next === "function") return next(error);
-    return res.status(500).json({ success: false, message: error.message });
+    if (typeof next === "function") {
+      return next(error);
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Error interno del servidor.",
+      requestId: req.requestId,
+    });
   }
 };
 
 export const deleteBooking = async (req, res, next) => {
   try {
+    if (!isValidObjectId(req.params.id)) {
+      return badRequest(res, "Identificador de reserva invalido.");
+    }
+
     const deletedBooking = await Booking.findByIdAndDelete(req.params.id);
     if (!deletedBooking) {
-      return res.status(404).json({ success: false, message: "Reserva no encontrada." });
+      return notFound(res, "Reserva no encontrada.");
     }
-    res.status(200).json({ success: true, message: "Reserva eliminada." });
+
+    await deleteBookingFromSheet(deletedBooking.bookingCode);
+
+    setNoStore(res);
+    res.status(200).json({
+      success: true,
+      message: "Reserva eliminada.",
+      requestId: req.requestId,
+    });
   } catch (error) {
-    if (typeof next === "function") return next(error);
-    return res.status(500).json({ success: false, message: error.message });
+    if (typeof next === "function") {
+      return next(error);
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Error interno del servidor.",
+      requestId: req.requestId,
+    });
   }
 };
 
@@ -294,13 +449,22 @@ export const deleteAllBookings = async (req, res, next) => {
     await Booking.deleteMany({});
     await resetBookingSheet();
 
+    setNoStore(res);
     res.status(200).json({
       success: true,
       message: "Sistema reiniciado completamente.",
+      requestId: req.requestId,
     });
   } catch (error) {
-    if (typeof next === "function") return next(error);
-    return res.status(500).json({ success: false, message: error.message });
+    if (typeof next === "function") {
+      return next(error);
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Error interno del servidor.",
+      requestId: req.requestId,
+    });
   }
 };
 
@@ -313,22 +477,30 @@ export const rescheduleBooking = async (req, res, next) => {
 
     const cleanCode = normalizeCode(parsed.data.bookingCode);
     const booking = await Booking.findOne({ bookingCode: cleanCode });
+
     if (!booking) {
-      return res.status(404).json({ success: false, message: "Codigo no encontrado." });
+      return notFound(res, "Codigo no encontrado.");
     }
 
-    if (booking.status === "Cancelado") {
-      return badRequest(res, "No se puede reprogramar un turno cancelado.");
+    if (!isManageableByClient(booking)) {
+      return badRequest(
+        res,
+        "Solo se pueden reprogramar turnos activos que todavia no finalizaron.",
+      );
     }
 
     const startTime = parseDateTimeInput(parsed.data.newTimeSlot);
     const duration = Number(parsed.data.newDuration);
     const slotError = validateSlot(startTime, duration);
-    if (slotError) return badRequest(res, slotError);
+    if (slotError) {
+      return badRequest(res, slotError);
+    }
 
     const endTime = new Date(startTime.getTime() + duration * 60 * 60 * 1000);
     const conflict = await hasConflict(startTime, endTime, booking._id);
-    if (conflict) return badRequest(res, "Horario ocupado.");
+    if (conflict) {
+      return badRequest(res, "Horario ocupado.");
+    }
 
     booking.timeSlot = startTime;
     booking.endTime = endTime;
@@ -347,10 +519,18 @@ export const rescheduleBooking = async (req, res, next) => {
       message: "Turno reprogramado.",
       data: publicBooking(booking),
       notifications,
+      requestId: req.requestId,
     });
   } catch (error) {
-    if (typeof next === "function") return next(error);
-    return res.status(500).json({ success: false, message: error.message });
+    if (typeof next === "function") {
+      return next(error);
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Error interno del servidor.",
+      requestId: req.requestId,
+    });
   }
 };
 
@@ -366,12 +546,20 @@ export const cancelBookingClient = async (req, res, next) => {
     });
 
     if (!booking) {
-      return res.status(404).json({ success: false, message: "No encontrado." });
+      return notFound(res, "No encontrado.");
+    }
+
+    if (!isManageableByClient(booking)) {
+      return badRequest(
+        res,
+        "Solo se pueden cancelar turnos activos que todavia no finalizaron.",
+      );
     }
 
     booking.status = "Cancelado";
     await booking.save();
     await updateBookingInSheet(booking);
+
     const notifications = await sendBookingNotifications({
       booking,
       event: "cancelled",
@@ -382,9 +570,17 @@ export const cancelBookingClient = async (req, res, next) => {
       message: "Turno cancelado.",
       data: publicBooking(booking),
       notifications,
+      requestId: req.requestId,
     });
   } catch (error) {
-    if (typeof next === "function") return next(error);
-    return res.status(500).json({ success: false, message: error.message });
+    if (typeof next === "function") {
+      return next(error);
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Error interno del servidor.",
+      requestId: req.requestId,
+    });
   }
 };

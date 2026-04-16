@@ -1,11 +1,15 @@
 import { GoogleSpreadsheet } from "google-spreadsheet";
 import { JWT } from "google-auth-library";
-import { formatDate } from "../utils/bookingRules.js";
+import {
+  formatDate,
+  formatResponsibleRelationshipLabel,
+} from "../utils/bookingRules.js";
 
 export const BOOKING_SHEET_HEADERS = [
   "Codigo",
   "Fecha Creacion",
   "Responsable",
+  "Parentesco",
   "Alumno",
   "Tutor",
   "Nivel",
@@ -23,6 +27,8 @@ export const BOOKING_SHEET_HEADERS = [
   "Estado",
 ];
 
+let sheetPromise = null;
+
 const isSheetsConfigured = () =>
   process.env.NODE_ENV !== "test" &&
   Boolean(
@@ -31,12 +37,14 @@ const isSheetsConfigured = () =>
       process.env.GOOGLE_PRIVATE_KEY,
   );
 
-const getSheet = async () => {
-  if (!isSheetsConfigured()) return null;
+const loadSheet = async () => {
+  if (!isSheetsConfigured()) {
+    return null;
+  }
 
   const serviceAccountAuth = new JWT({
     email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-    key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    key: String(process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g, "\n"),
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
 
@@ -58,10 +66,25 @@ const getSheet = async () => {
   return sheet;
 };
 
+const getSheet = async () => {
+  if (!sheetPromise) {
+    sheetPromise = loadSheet().catch((error) => {
+      sheetPromise = null;
+      throw error;
+    });
+  }
+
+  return sheetPromise;
+};
+
 export const bookingToSheetRow = (booking) => ({
   Codigo: booking.bookingCode,
   "Fecha Creacion": formatDate(booking.createdAt || new Date()),
   Responsable: booking.responsibleName,
+  Parentesco: formatResponsibleRelationshipLabel(
+    booking.responsibleRelationship,
+    booking.responsibleRelationshipOther,
+  ),
   Alumno: booking.studentName,
   Tutor: booking.tutorName,
   Nivel: booking.educationLevel,
@@ -121,6 +144,26 @@ export const resetBookingSheet = async () => {
     return true;
   } catch (error) {
     console.error("Google Sheets reset error:", error.message);
+    return false;
+  }
+};
+
+export const deleteBookingFromSheet = async (bookingCode) => {
+  try {
+    const sheet = await getSheet();
+    if (!sheet) return false;
+
+    const rows = await sheet.getRows();
+    const matchingRows = rows.filter((row) => row.get("Codigo") === bookingCode);
+
+    if (matchingRows.length === 0) {
+      return true;
+    }
+
+    await Promise.all(matchingRows.map((row) => row.delete()));
+    return true;
+  } catch (error) {
+    console.error("Google Sheets delete error:", error.message);
     return false;
   }
 };
