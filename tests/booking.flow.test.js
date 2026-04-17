@@ -10,7 +10,7 @@ let Booking;
 let User;
 
 const getMemoryLaunchTimeout = () =>
-  Number(process.env.MONGO_MEMORY_LAUNCH_TIMEOUT_MS || 30000);
+  Number(process.env.MONGO_MEMORY_LAUNCH_TIMEOUT_MS || 90000);
 
 const formatForApi = (date) => {
   const day = String(date.getDate()).padStart(2, "0");
@@ -72,7 +72,7 @@ beforeAll(async () => {
   app = (await import("../src/app.js")).default;
   Booking = (await import("../src/models/Booking.js")).default;
   User = (await import("../src/models/User.js")).default;
-}, 30000);
+}, Math.max(30000, getMemoryLaunchTimeout() + 15000));
 
 beforeEach(async () => {
   await Booking.deleteMany({});

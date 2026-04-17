@@ -168,6 +168,7 @@ export const updateBookingSchema = z
     notes: z.string().trim().max(2000).optional(),
     studentEvolution: z.string().trim().max(5000).optional(),
     emotionalState: z.string().trim().max(1000).optional(),
+    timeSlot: z.union([z.string(), z.date()]).optional(),
   })
   .strict();
 

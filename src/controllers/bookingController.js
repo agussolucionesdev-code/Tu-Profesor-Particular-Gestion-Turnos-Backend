@@ -382,7 +382,32 @@ export const updateBooking = async (req, res, next) => {
       return badRequest(res, "Datos de actualizacion invalidos.", parsed.error.flatten());
     }
 
-    const updatedBooking = await Booking.findByIdAndUpdate(req.params.id, parsed.data, {
+    const updateData = { ...parsed.data };
+
+    if (updateData.timeSlot !== undefined) {
+      const existing = await Booking.findById(req.params.id).select("duration").lean();
+      if (!existing) {
+        return notFound(res, "Reserva no encontrada.");
+      }
+
+      const startTime = parseDateTimeInput(updateData.timeSlot);
+      const duration = Number(existing.duration) || 1;
+      const slotError = validateSlot(startTime, duration);
+      if (slotError) {
+        return badRequest(res, slotError);
+      }
+
+      const endTime = new Date(startTime.getTime() + duration * 60 * 60 * 1000);
+      const conflict = await hasConflict(startTime, endTime, req.params.id);
+      if (conflict) {
+        return badRequest(res, "El nuevo horario tiene conflicto con otra reserva activa.");
+      }
+
+      updateData.timeSlot = startTime;
+      updateData.endTime = endTime;
+    }
+
+    const updatedBooking = await Booking.findByIdAndUpdate(req.params.id, updateData, {
       new: true,
       runValidators: true,
     });

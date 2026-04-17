@@ -5,6 +5,18 @@ import {
   formatResponsibleRelationshipLabel,
 } from "../utils/bookingRules.js";
 
+const BRAND = {
+  teacher: "Agustín Elías Sosa",
+  name: "Tu Profesor Particular",
+  blue: "#204060",
+  blueDark: "#183858",
+  green: "#589860",
+  page: "#f6f8fb",
+  border: "#d8e2ea",
+  text: "#17324d",
+  muted: "#5d7184",
+};
+
 const escapeHtml = (value) =>
   String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -26,26 +38,47 @@ const getTransporter = () =>
     },
   });
 
+const getFrontendUrl = () =>
+  String(process.env.FRONTEND_URL || "https://tu-profesor-particular.com").replace(
+    /\/$/,
+    "",
+  );
+
+const getManagementUrl = (code) =>
+  `${getFrontendUrl()}/portal?code=${encodeURIComponent(code || "")}`;
+
+const getContactPhone = () =>
+  String(process.env.CONTACT_PHONE || "+54 9 11 6423-6675").trim();
+
 const getNotificationCopy = (event) => {
   switch (event) {
     case "rescheduled":
       return {
-        title: "Turno reprogramado",
-        intro: "Tú clase particular ha sido reprogramada. Hemos ajustado la fecha para que sea más cómoda para vos.",
-        ownerLabel: "📅 Turno Reprogramado",
+        title: "Tu turno fue reprogramado",
+        ownerTitle: "Turno reprogramado",
+        intro:
+          "Ya ajusté el turno. Te dejo el nuevo detalle para que lo tengas claro y puedas volver a gestionarlo cuando lo necesites.",
+        nextAction:
+          "Guardá este mensaje. Si algo no coincide, podés entrar a Mis Turnos o escribirme.",
       };
     case "cancelled":
       return {
-        title: "Turno cancelado",
-        intro: "Tu clase particular ha sido cancelada. No te preocupes, podés reservar un nuevo espacio cuando lo necesites.",
-        ownerLabel: "❌ Turno Cancelado",
+        title: "Tu turno fue cancelado",
+        ownerTitle: "Turno cancelado",
+        intro:
+          "El turno quedó cancelado. No hace falta que respondas este correo; si necesitás otro horario, podés reservar nuevamente cuando quieras.",
+        nextAction:
+          "El código queda como referencia de gestión. Para una nueva clase, reservá otro horario desde la web.",
       };
     case "created":
     default:
       return {
-        title: "Reserva confirmada",
-        intro: "¡Todo listo! Tu clase particular ha quedado agendada. Estoy ansioso por empezar a trabajar juntos en tus objetivos.",
-        ownerLabel: "✨ Nueva Reserva",
+        title: "Tu turno quedó reservado",
+        ownerTitle: "Nueva reserva",
+        intro:
+          "Todo listo. Tu clase quedó reservada y estos son los datos importantes para llegar sin vueltas.",
+        nextAction:
+          "Guardá el código. Te sirve para revisar, reprogramar o cancelar el turno desde Mis Turnos.",
       };
   }
 };
@@ -56,68 +89,167 @@ const buildRelationshipLabel = (booking) =>
     booking?.responsibleRelationshipOther,
   );
 
-const getGreetingName = ({ studentName, responsibleName, responsibleRelationship }) =>
-  responsibleRelationship === ADULT_RELATIONSHIP_VALUE ? studentName : responsibleName;
+const getGreetingName = ({
+  studentName,
+  responsibleName,
+  responsibleRelationship,
+}) =>
+  responsibleRelationship === ADULT_RELATIONSHIP_VALUE
+    ? studentName
+    : responsibleName || studentName;
 
-const applyNeurocopyPrinciples = (text, context = {}) => {
-  const {
-    tone = "warm",
-    emphasizeReassurance = true,
-    includeProgressCues = true,
-  } = context;
-  
-  let enhanced = text;
-  
-  if (emphasizeReassurance) {
-    enhanced = enhanced
-      .replace(/preocup(es|és)/gi, "tranquilo")
-      .replace(/problema/gi, "oportunidad")
-      .replace(/error/gi, "ajuste");
-  }
-  
-  if (includeProgressCues) {
-    enhanced = enhanced
-      .replace(/(confirmado|listo|reservado)/gi, "✨ $1 ✨")
-      .replace(/(próximo|siguiente)/gi, "👉 $1");
-  }
-  
-  return enhanced;
+const buildSafeBooking = (booking = {}, dateStr = "") => {
+  const code = booking.bookingCode || booking.code || "";
+  return {
+    code: escapeHtml(code),
+    rawCode: code,
+    studentName: escapeHtml(booking.studentName || "Alumno/a"),
+    responsibleName: escapeHtml(booking.responsibleName || "No especificado"),
+    relationshipLabel: escapeHtml(buildRelationshipLabel(booking)),
+    greetingName: escapeHtml(getGreetingName(booking) || "Hola"),
+    subject: escapeHtml(booking.subject || "Materia a definir"),
+    educationLevel: escapeHtml(booking.educationLevel || "Nivel no cargado"),
+    yearGrade: escapeHtml(booking.yearGrade || ""),
+    school: escapeHtml(booking.school || "Institución no cargada"),
+    phone: escapeHtml(booking.phone || "-"),
+    email: escapeHtml(booking.email || "-"),
+    academicSituation: escapeHtml(
+      booking.academicSituation || "Sin comentarios adicionales.",
+    ),
+    dateStr: escapeHtml(dateStr || formatDate(booking.timeSlot)),
+    managementUrl: escapeHtml(getManagementUrl(code)),
+    contactPhone: escapeHtml(getContactPhone()),
+  };
 };
 
-const generateDynamicVariables = (booking, extraData = {}) => {
-  const baseDate = booking?.timeSlot ? new Date(booking.timeSlot) : new Date();
-  
-  return {
-    studentFirstName: booking?.studentName?.split(" ")[0] || "Estimado/a",
-    responsibleFirstName: booking?.responsibleName?.split(" ")[0] || "",
-    bookingCode: booking?.bookingCode || "ABC123",
-    formattedDate: extraData.dateStr || baseDate.toLocaleDateString("es-AR", {
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    }),
-    formattedTime: booking?.timeSlot 
-      ? new Date(booking.timeSlot).toLocaleTimeString("es-AR", { 
-          hour: "2-digit", 
-          minute: "2-digit" 
-        })
-      : "--:--",
-    subject: booking?.subject || "Tu materia",
-    educationLevel: booking?.educationLevel || "",
-    yearGrade: booking?.yearGrade || "",
-    school: booking?.school || "",
-    location: "Jujuy 414, Temperley",
-    locationDetail: "Portón blanco. A 1 cuadra del C.C. Salta y 4 de Av. Eva Perón.",
-    contactPhone: process.env.CONTACT_PHONE || "+54 11 2222-3333",
-    contactEmail: process.env.CONTACT_EMAIL || "clases@agustinsosa.com",
-    cancellationWindow: "24 horas",
-    rescheduleUrl: `${process.env.FRONTEND_URL || "https://tu-profesor.com"}/portal?code=${booking?.bookingCode}`,
-    tutorSignature: "Agustín Sosa - Profesor Particular",
-    brandColor: "#204060",
-    successColor: "#589860",
-    accentColor: "#f59e0b",
-  };
+export const buildBookingEmailHtml = ({
+  booking,
+  event = "created",
+  dateStr,
+} = {}) => {
+  const copy = getNotificationCopy(event);
+  const safe = buildSafeBooking(booking, dateStr);
+
+  return `<!doctype html>
+<html lang="es-AR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light only" />
+    <title>${escapeHtml(copy.title)}</title>
+  </head>
+  <body style="margin:0;padding:0;background:${BRAND.page};font-family:Arial,Helvetica,sans-serif;color:${BRAND.text};">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:${BRAND.page};padding:24px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:#ffffff;border:1px solid ${BRAND.border};border-radius:16px;overflow:hidden;">
+            <tr>
+              <td style="padding:28px 28px 22px;border-bottom:1px solid ${BRAND.border};">
+                <p style="margin:0 0 8px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:${BRAND.green};font-weight:700;">${BRAND.name}</p>
+                <h1 style="margin:0;color:${BRAND.blue};font-size:26px;line-height:1.2;">${escapeHtml(copy.title)}</h1>
+                <p style="margin:12px 0 0;color:${BRAND.muted};font-size:16px;line-height:1.65;">Hola ${safe.greetingName}. ${escapeHtml(copy.intro)}</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:24px 28px;">
+                <div style="border:1px solid ${BRAND.border};border-left:5px solid ${BRAND.green};border-radius:12px;padding:18px;background:#fbfdff;">
+                  <p style="margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:${BRAND.muted};font-weight:700;">Datos del turno</p>
+                  <p style="margin:0 0 8px;"><strong>Fecha y horario:</strong> ${safe.dateStr}</p>
+                  <p style="margin:0 0 8px;"><strong>Alumno/a:</strong> ${safe.studentName}</p>
+                  <p style="margin:0 0 8px;"><strong>Responsable:</strong> ${safe.responsibleName} (${safe.relationshipLabel})</p>
+                  <p style="margin:0 0 8px;"><strong>Materia:</strong> ${safe.subject}</p>
+                  <p style="margin:0;"><strong>Nivel:</strong> ${safe.educationLevel}${safe.yearGrade ? ` - ${safe.yearGrade}` : ""}</p>
+                </div>
+
+                <div style="text-align:center;margin:24px 0;padding:20px;border:1px solid #cfe5d2;background:#f2faf3;border-radius:12px;">
+                  <p style="margin:0 0 8px;color:${BRAND.muted};font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;">Código de gestión</p>
+                  <p style="margin:0;font-family:Consolas,Menlo,monospace;font-size:28px;letter-spacing:.16em;font-weight:800;color:${BRAND.blueDark};">${safe.code}</p>
+                  <p style="margin:10px 0 0;color:${BRAND.muted};font-size:14px;">${escapeHtml(copy.nextAction)}</p>
+                </div>
+
+                <p style="margin:0 0 18px;color:${BRAND.muted};font-size:15px;line-height:1.65;">Podés revisar el turno, reprogramarlo o cancelarlo desde Mis Turnos. Si necesitás ayuda, escribime y lo vemos con calma.</p>
+                <p style="text-align:center;margin:0 0 24px;">
+                  <a href="${safe.managementUrl}" style="display:inline-block;background:${BRAND.green};color:#ffffff;text-decoration:none;border-radius:8px;padding:13px 22px;font-weight:700;">Ir a Mis Turnos</a>
+                </p>
+
+                <div style="border-top:1px solid ${BRAND.border};padding-top:18px;">
+                  <p style="margin:0;color:${BRAND.text};font-size:16px;font-weight:700;">${BRAND.teacher}</p>
+                  <p style="margin:4px 0 0;color:${BRAND.muted};font-size:14px;">Profesor particular</p>
+                  <p style="margin:12px 0 0;color:${BRAND.muted};font-size:14px;">WhatsApp: ${safe.contactPhone}</p>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="background:${BRAND.blueDark};padding:18px 28px;text-align:center;color:#d8e2ea;font-size:13px;line-height:1.6;">
+                Guardá este correo como respaldo. La gestión principal se hace con el código del turno.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+};
+
+export const buildBookingEmailText = ({
+  booking,
+  event = "created",
+  dateStr,
+} = {}) => {
+  const copy = getNotificationCopy(event);
+  const safe = buildSafeBooking(booking, dateStr);
+
+  return [
+    `${copy.title}`,
+    "",
+    `Hola ${safe.greetingName}. ${copy.intro}`,
+    "",
+    `Fecha y horario: ${safe.dateStr}`,
+    `Alumno/a: ${safe.studentName}`,
+    `Responsable: ${safe.responsibleName} (${safe.relationshipLabel})`,
+    `Materia: ${safe.subject}`,
+    `Código de gestión: ${safe.rawCode}`,
+    "",
+    `Mis Turnos: ${getManagementUrl(safe.rawCode)}`,
+    "",
+    `${BRAND.teacher} - ${BRAND.name}`,
+  ].join("\n");
+};
+
+const buildOwnerEmailHtml = ({ booking, event, dateStr }) => {
+  const copy = getNotificationCopy(event);
+  const safe = buildSafeBooking(booking, dateStr);
+  const whatsappDigits = String(booking?.phone || "").replace(/\D/g, "");
+  const whatsappUrl = whatsappDigits
+    ? `https://wa.me/${whatsappDigits}?text=${encodeURIComponent(
+        `Hola, te escribo por el turno ${safe.rawCode}.`,
+      )}`
+    : "";
+
+  return `<!doctype html>
+<html lang="es-AR">
+  <body style="margin:0;padding:20px;background:${BRAND.page};font-family:Arial,Helvetica,sans-serif;color:${BRAND.text};">
+    <div style="max-width:620px;margin:0 auto;background:#ffffff;border:1px solid ${BRAND.border};border-radius:14px;padding:24px;">
+      <p style="margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:${BRAND.green};font-weight:700;">Agenda docente</p>
+      <h1 style="margin:0 0 16px;color:${BRAND.blue};font-size:24px;">${escapeHtml(copy.ownerTitle)}</h1>
+      <div style="border:1px solid ${BRAND.border};border-radius:12px;padding:16px;background:#fbfdff;">
+        <p style="margin:0 0 8px;"><strong>Alumno/a:</strong> ${safe.studentName}</p>
+        <p style="margin:0 0 8px;"><strong>Responsable:</strong> ${safe.responsibleName} (${safe.relationshipLabel})</p>
+        <p style="margin:0 0 8px;"><strong>Materia:</strong> ${safe.subject}</p>
+        <p style="margin:0 0 8px;"><strong>Fecha:</strong> ${safe.dateStr}</p>
+        <p style="margin:0 0 8px;"><strong>Contacto:</strong> ${safe.phone} | ${safe.email}</p>
+        <p style="margin:0 0 8px;"><strong>Código:</strong> <span style="font-family:Consolas,Menlo,monospace;font-weight:800;">${safe.code}</span></p>
+        <p style="margin:0;"><strong>Contexto:</strong> ${safe.academicSituation}</p>
+      </div>
+      ${
+        whatsappUrl
+          ? `<p style="margin:20px 0 0;"><a href="${escapeHtml(whatsappUrl)}" style="display:inline-block;background:${BRAND.green};color:#ffffff;text-decoration:none;border-radius:8px;padding:12px 18px;font-weight:700;">Escribir por WhatsApp</a></p>`
+          : ""
+      }
+    </div>
+  </body>
+</html>`;
 };
 
 export const sendBookingEmail = async (
@@ -129,145 +261,21 @@ export const sendBookingEmail = async (
 ) => {
   if (!toEmail || !canSendEmail()) return false;
 
+  const event = extraData.event || "created";
+  const booking = {
+    ...extraData,
+    studentName,
+    bookingCode: code,
+  };
+  const copy = getNotificationCopy(event);
+
   try {
-    const {
-      responsibleName = "-",
-      responsibleRelationship = ADULT_RELATIONSHIP_VALUE,
-      responsibleRelationshipOther = "",
-      subject = "Particular",
-      educationLevel = "-",
-      yearGrade = "-",
-      school = "-",
-      title = "Reserva confirmada",
-      intro = "La clase particular quedó agendada correctamente.",
-    } = extraData;
-
-    const relationshipLabel = buildRelationshipLabel({
-      responsibleRelationship,
-      responsibleRelationshipOther,
-    });
-
-    const safe = {
-      title: escapeHtml(title),
-      intro: escapeHtml(intro),
-      nameToGreet: escapeHtml(
-        getGreetingName({
-          studentName,
-          responsibleName,
-          responsibleRelationship,
-        }),
-      ),
-      studentName: escapeHtml(studentName),
-      relationshipLabel: escapeHtml(relationshipLabel),
-      responsibleName: escapeHtml(responsibleName),
-      dateStr: escapeHtml(dateStr),
-      subject: escapeHtml(subject),
-      educationLevel: escapeHtml(educationLevel),
-      yearGrade: escapeHtml(yearGrade),
-      school: escapeHtml(school),
-      code: escapeHtml(code),
-    };
-
-    const vars = generateDynamicVariables({ ...extraData, timeSlot: extraData.dateStr }, extraData);
-    const neuroCopy = applyNeurocopyPrinciples(safe.intro, { tone: "warm" });
-
-    const htmlContent = `
-      <!DOCTYPE html>
-      <html lang="es-AR">
-      <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <meta name="color-scheme" content="light only" />
-        <style>
-          @media (prefers-color-scheme: dark) {
-            body { background-color: #0f172a !important; }
-          }
-          body { margin: 0; padding: 0; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f8fafc; color: #334155; line-height: 1.6; }
-          .container { max-width: 600px; margin: 20px auto; background-color: #ffffff; border-radius: 24px; overflow: hidden; box-shadow: 0 20px 50px rgba(0,0,0,0.08); border: 1px solid #e2e8f0; }
-          .header { background: linear-gradient(135deg, #204060, #183858); padding: 40px 32px; text-align: center; }
-          .header h1 { color: #ffffff; margin: 0; font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
-          .content { padding: 34px 30px; }
-          .greeting { font-size: 20px; margin-bottom: 18px; color: #0f172a; font-weight: 800; }
-          .text { font-size: 16px; line-height: 1.7; margin-bottom: 24px; color: #475569; }
-          .text strong { color: #204060; font-weight: 700; }
-          .card { background-color: #f8fafc; border: 1px solid #e2e8f0; border-left: 6px solid #589860; padding: 24px; border-radius: 16px; margin: 24px 0; }
-          .card-row { margin-bottom: 12px; font-size: 15px; display: flex; justify-content: space-between; align-items: center; }
-          .card-row strong { color: #64748b; font-weight: 600; }
-          .card-row span { color: #0f172a; font-weight: 700; text-align: right; }
-          .code-badge { background: linear-gradient(135deg, #edf6ee, #f0fdf4); padding: 8px 16px; border-radius: 12px; font-family: 'JetBrains Mono', monospace; font-weight: 800; color: #166534; font-size: 20px; border: 2px solid #589860; letter-spacing: 2px; display: inline-block; margin: 8px 0; }
-          .address-box { background-color: #f0fdf4; border: 1px solid #dcfce7; padding: 20px; border-radius: 16px; margin-top: 30px; text-align: center; }
-          .address-title { color: #166534; font-weight: 800; text-transform: uppercase; font-size: 12px; margin-bottom: 8px; letter-spacing: 0.08em; }
-          .address-text { color: #14532d; font-size: 15px; line-height: 1.6; font-weight: 500; }
-          .action-buttons { margin: 24px 0; text-align: center; }
-          .btn-primary { display: inline-block; background: #589860; color: #ffffff !important; padding: 12px 24px; border-radius: 12px; text-decoration: none; font-weight: 700; font-size: 15px; }
-          .btn-primary:hover { background: #4a8551; }
-          .footer { background-color: #0f172a; padding: 24px; text-align: center; color: #94a3b8; font-size: 13px; }
-          .footer a { color: #589860; text-decoration: none; }
-          .signature { margin-top: 30px; border-top: 1px solid #e2e8f0; padding-top: 24px; }
-          .sig-name { font-size: 20px; font-weight: 800; color: #0f172a; }
-          .sig-title { font-size: 14px; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 6px; }
-          @media (max-width: 600px) {
-            .container { margin: 10px; border-radius: 16px; }
-            .header, .content, .footer { padding: 24px 20px; }
-            .card-row { flex-direction: column; align-items: flex-start; gap: 4px; }
-            .card-row span { text-align: left; }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header"><h1>${safe.title}</h1></div>
-          <div class="content">
-            <p class="greeting">Hola ${safe.nameToGreet} 👋</p>
-            <p class="text">${neuroCopy} Aquí tenés los detalles de nuestro encuentro para <strong>${safe.studentName}</strong>.</p>
-            <div class="card">
-              <div class="card-row"><strong>📅 Fecha:</strong> <span>${safe.dateStr}</span></div>
-              <div class="card-row"><strong>👤 Alumno:</strong> <span>${safe.studentName}</span></div>
-              <div class="card-row"><strong>🔗 Vínculo:</strong> <span>${safe.relationshipLabel}</span></div>
-              <div class="card-row"><strong>👨‍👩‍👧‍👦 Responsable:</strong> <span>${safe.responsibleName}</span></div>
-              <div class="card-row"><strong>📚 Materia:</strong> <span>${safe.subject}</span></div>
-              <div class="card-row"><strong>🎓 Nivel:</strong> <span>${safe.educationLevel} ${safe.yearGrade ? `(${safe.yearGrade})` : ""}</span></div>
-              <div class="card-row"><strong>🏫 Institución:</strong> <span>${safe.school}</span></div>
-              <div class="card-row" style="margin-top: 20px; justify-content: center;">
-                <div style="text-align: center; width: 100%;">
-                  <strong style="display: block; margin-bottom: 8px; color: #64748b;">🔑 Tu código de gestión</strong>
-                  <span class="code-badge" aria-label="Código de reserva: ${safe.code}">${safe.code}</span>
-                  <small style="display: block; margin-top: 8px; color: #64748b;">Guárdalo para gestionar tu turno</small>
-                </div>
-              </div>
-            </div>
-            <div class="address-box">
-              <div class="address-title">📍 Lugar del encuentro</div>
-              <div class="address-text">
-                <strong>Jujuy 414</strong><br>
-                Temperley, Lomas de Zamora, Bs. As.<br>
-                <span style="font-size: 13px; display: block; margin-top: 8px; opacity: 0.85;">🚪 Portón blanco. A 1 cuadra del C.C. Salta y 4 de Av. Eva Perón.</span>
-              </div>
-            </div>
-            <div class="action-buttons">
-              <a href="${vars.rescheduleUrl}" class="btn-primary" style="color: #ffffff !important;">🗓️ Gestionar mi turno</a>
-            </div>
-            <div class="signature">
-              <div class="sig-name">Agustín Sosa</div>
-              <div class="sig-title">Profesor Particular</div>
-            </div>
-          </div>
-          <div class="footer">
-            <p>💡 Guarda este mensaje. Podés gestionar tu turno en <a href="${process.env.FRONTEND_URL || "#"}">la web</a> usando tu código, email o teléfono.</p>
-            <p style="margin-top: 12px; font-size: 12px; opacity: 0.9;">¿Necesitás ayuda? Respondé a este email o escribinos al ${vars.contactPhone}</p>
-            <p style="margin-top: 16px; border-top: 1px solid #334155; padding-top: 16px;">&copy; ${new Date().getFullYear()} Agustín Elías Sosa. Todos los derechos reservados.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
-
-
     await getTransporter().sendMail({
-      from: `"Clases Agustín" <${process.env.EMAIL_USER}>`,
+      from: `"${BRAND.name}" <${process.env.EMAIL_USER}>`,
       to: toEmail,
-      subject: `${safe.title}: ${safe.subject} - ${safe.dateStr}`,
-      html: htmlContent,
+      subject: `${copy.title}: ${booking.subject || "Clase particular"} - ${dateStr}`,
+      html: buildBookingEmailHtml({ booking, event, dateStr }),
+      text: buildBookingEmailText({ booking, event, dateStr }),
     });
 
     return true;
@@ -277,8 +285,10 @@ export const sendBookingEmail = async (
   }
 };
 
-export const sendBookingNotifications = async ({ booking, event = "created" }) => {
-  const copy = getNotificationCopy(event);
+export const sendBookingNotifications = async ({
+  booking,
+  event = "created",
+}) => {
   const formattedDate = formatDate(booking.timeSlot);
 
   const clientEmailSent = booking.email
@@ -295,8 +305,9 @@ export const sendBookingNotifications = async ({ booking, event = "created" }) =
           educationLevel: booking.educationLevel,
           yearGrade: booking.yearGrade,
           school: booking.school,
-          title: copy.title,
-          intro: copy.intro,
+          phone: booking.phone,
+          academicSituation: booking.academicSituation,
+          event,
         },
       )
     : false;
@@ -316,36 +327,12 @@ export const sendBookingNotifications = async ({ booking, event = "created" }) =
   }
 
   try {
-    const safe = {
-      ownerLabel: escapeHtml(copy.ownerLabel),
-      studentName: escapeHtml(booking.studentName),
-      responsibleName: escapeHtml(booking.responsibleName),
-      relationshipLabel: escapeHtml(buildRelationshipLabel(booking)),
-      subject: escapeHtml(booking.subject),
-      date: escapeHtml(formattedDate),
-      phone: escapeHtml(booking.phone || "-"),
-      email: escapeHtml(booking.email || "-"),
-      code: escapeHtml(booking.bookingCode),
-    };
-
     await getTransporter().sendMail({
-      from: `"Clases Agustín" <${process.env.EMAIL_USER}>`,
+      from: `"${BRAND.name}" <${process.env.EMAIL_USER}>`,
       to: ownerEmail,
-      subject: `${safe.ownerLabel}: ${safe.studentName} - ${safe.date}`,
-      html: `
-        <div style="font-family: 'Inter', Helvetica, Arial, sans-serif; color: #334155; line-height: 1.6; padding: 20px; background-color: #f8fafc; border-radius: 16px;">
-          <h2 style="margin-bottom: 12px; color: #0f172a; font-weight: 800;">${safe.ownerLabel}</h2>
-          <p style="margin-bottom: 20px; color: #64748b;">Se ha registrado un movimiento en tu agenda:</p>
-          <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.03);">
-            <p style="margin: 0 0 8px 0;"><strong>Alumno:</strong> ${safe.studentName}</p>
-            <p style="margin: 0 0 8px 0;"><strong>Responsable:</strong> ${safe.responsibleName} (${safe.relationshipLabel})</p>
-            <p style="margin: 0 0 8px 0;"><strong>Materia:</strong> ${safe.subject}</p>
-            <p style="margin: 0 0 8px 0;"><strong>Fecha:</strong> ${safe.date}</p>
-            <p style="margin: 0 0 8px 0;"><strong>Contacto:</strong> ${safe.phone} | ${safe.email}</p>
-            <p style="margin: 0; padding-top: 12px; border-top: 1px solid #f1f5f9;"><strong>Código:</strong> <span style="font-family: monospace; font-weight: 800; background: #f1f5f9; padding: 2px 6px; border-radius: 4px;">${safe.code}</span></p>
-          </div>
-        </div>
-      `,
+      subject: `${getNotificationCopy(event).ownerTitle}: ${booking.studentName} - ${formattedDate}`,
+      html: buildOwnerEmailHtml({ booking, event, dateStr: formattedDate }),
+      text: buildBookingEmailText({ booking, event, dateStr: formattedDate }),
     });
 
     return {
