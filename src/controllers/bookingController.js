@@ -527,6 +527,8 @@ export const rescheduleBooking = async (req, res, next) => {
       return badRequest(res, "Horario ocupado.");
     }
 
+    const previousTimeSlot = booking.timeSlot;
+
     booking.timeSlot = startTime;
     booking.endTime = endTime;
     booking.duration = duration;
@@ -537,6 +539,7 @@ export const rescheduleBooking = async (req, res, next) => {
     const notifications = await sendBookingNotifications({
       booking,
       event: "rescheduled",
+      previousTimeSlot,
     });
 
     res.status(200).json({
