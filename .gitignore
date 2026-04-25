@@ -6,3 +6,7 @@ coverage/
 !.env.example
 .DS_Store
 Thumbs.db
+
+# Persistent local MongoDB data (never commit)
+.mongodb-local/
+mongodb-data/

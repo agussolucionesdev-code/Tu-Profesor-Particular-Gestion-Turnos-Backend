@@ -1,4 +1,9 @@
 import mongoose from "mongoose";
+import {
+  startLocalMongod,
+  stopLocalMongod,
+  getLocalMongodUri,
+} from "./localMongod.js";
 
 let memoryServer = null;
 let connectionEventsRegistered = false;
@@ -195,6 +200,21 @@ const getMongoTargets = async () => {
     throw new Error("MONGO_URI is required in production.");
   }
 
+  // Try local mongod (persistent embedded process) as fallback
+  const localStarted = await startLocalMongod();
+
+  if (localStarted) {
+    return [
+      makeTarget({
+        uri: getLocalMongodUri(),
+        mode: "mongo",
+        source: "local-mongod",
+        persistent: true,
+      }),
+    ];
+  }
+
+  // Last resort: standard local MongoDB (if installed separately)
   return [
     makeTarget({
       uri: "mongodb://127.0.0.1:27017/tu-profesor-turnos",
@@ -218,7 +238,15 @@ const connectMongoTarget = async (target) => {
   );
 
   const conn = await mongoose.connect(target.uri, getConnectionOptions());
-  console.log(`DATABASE: MongoDB connected: ${conn.connection.host}`);
+
+  const persistenceLabel = target.persistent ? "PERSISTENT ✓" : "VOLATILE — data resets on restart ⚠";
+  console.log("==================================================");
+  console.log(`DATABASE: connected via ${target.source}`);
+  console.log(`DATABASE: host       → ${conn.connection.host}`);
+  console.log(`DATABASE: name       → ${conn.connection.name}`);
+  console.log(`DATABASE: storage    → ${persistenceLabel}`);
+  console.log("==================================================");
+
   return conn.connection;
 };
 
@@ -269,6 +297,23 @@ const connectDB = async () => {
     }
   }
 
+  // Try persistent local mongod before falling back to volatile memory
+  if (!isProduction()) {
+    console.warn("DATABASE: all configured targets failed — trying local embedded mongod...");
+    const localStarted = await startLocalMongod();
+
+    if (localStarted) {
+      return connectMongoTarget(
+        makeTarget({
+          uri: getLocalMongodUri(),
+          mode: "mongo",
+          source: "local-mongod-fallback",
+          persistent: true,
+        }),
+      );
+    }
+  }
+
   if (canRecoverWithMemoryFallback()) {
     return connectMemoryFallback(lastError?.message);
   }
@@ -283,6 +328,8 @@ export const disconnectDB = async () => {
     await memoryServer.stop();
     memoryServer = null;
   }
+
+  await stopLocalMongod();
 };
 
 export const getDbConnectionMeta = () => ({
