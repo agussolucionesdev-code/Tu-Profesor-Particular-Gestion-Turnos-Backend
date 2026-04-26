@@ -145,6 +145,25 @@ const EVENT_THEMES = {
       "Si la cancelación fue un error, escribime y lo resolvemos al instante.",
     showAddress: false,
   },
+  reminder: {
+    accent: BRAND.amber,
+    accentDeep: BRAND.amberDeep,
+    accentSoft: BRAND.amberSoft,
+    badgeLabel: "Recordatorio de clase",
+    badgeIcon: "⏰",
+    clientTitle: "Recordatorio: tu clase es mañana",
+    ownerTitle: "Recordatorio de clase — mañana",
+    clientIntro:
+      "Te recordamos que mañana tenés una clase agendada. Si necesitás reprogramar o cancelar, avisanos con anticipación.",
+    ownerIntro:
+      "Recordatorio automático generado 24 horas antes de la clase.",
+    clientCtaLabel: "Ver mi turno en Mis Turnos",
+    nextAction:
+      "Si necesitás reprogramar o cancelar, entrá a Mis Turnos con tu código, email o teléfono.",
+    footerNote:
+      "Este recordatorio se envía automáticamente 24 horas antes de la clase.",
+    showAddress: true,
+  },
 };
 
 const getTheme = (event) => EVENT_THEMES[event] || EVENT_THEMES.created;
@@ -710,6 +729,7 @@ export const sendBookingNotifications = async ({
 
   const theme = getTheme(event);
 
+
   try {
     await getTransporter().sendMail({
       from: `"${BRAND.name}" <${process.env.EMAIL_USER}>`,
@@ -753,4 +773,33 @@ export const sendBookingNotifications = async ({
       },
     };
   }
+};
+
+export const sendReminderNotification = async (booking) => {
+  if (!booking?.email || !canSendEmail()) {
+    return { sent: false, recipient: booking?.email || "" };
+  }
+
+  const dateStr = formatDate(booking.timeSlot);
+  const sent = await sendBookingEmail(
+    booking.studentName,
+    booking.email,
+    dateStr,
+    booking.bookingCode,
+    {
+      event: "reminder",
+      responsibleName: booking.responsibleName,
+      responsibleRelationship: booking.responsibleRelationship,
+      responsibleRelationshipOther: booking.responsibleRelationshipOther,
+      subject: booking.subject,
+      educationLevel: booking.educationLevel,
+      yearGrade: booking.yearGrade,
+      school: booking.school,
+      phone: booking.phone,
+      academicSituation: booking.academicSituation,
+      duration: booking.duration,
+    },
+  );
+
+  return { sent, recipient: booking.email };
 };

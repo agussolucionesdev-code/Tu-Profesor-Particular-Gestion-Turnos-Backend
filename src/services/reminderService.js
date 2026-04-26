@@ -1,49 +1,55 @@
-import axios from "axios";
-import { formatDate } from "../utils/bookingRules.js";
+import Booking from "../models/Booking.js";
+import { sendReminderNotification } from "../config/mailer.js";
 
-/**
- * ReminderService handles the logic for notifying students and professors
- * about upcoming appointments.
- */
-export const ReminderService = {
-  async sendWhatsAppReminder(booking) {
-    if (!booking.phone) return { success: false, error: "No phone number provided" };
+// Find bookings whose timeSlot falls 20–28 hours from now.
+// Running at 09:00 AM daily catches classes from 05:00 tomorrow to 13:00 tomorrow,
+// which covers the full practical range without double-sending.
+const WINDOW_START_HOURS = 20;
+const WINDOW_END_HOURS = 28;
 
-    const dateStr = formatDate(booking.timeSlot);
-    const studentName = booking.studentName;
-    const subject = booking.subject;
-    
-    // Message constructed based on consumer psychology: warm, professional, and helpful.
-    const message = `Hola ${studentName}, soy Agustín Sosa. Te escribo para recordarte nuestra clase de ${subject} programada para mañana ${dateStr}. ¡Nos vemos pronto!`;
-    
-    const phone = String(booking.phone).replace(/\D/g, "");
-    const formattedPhone = phone.length === 10 ? `549${phone}` : phone;
-    
-    const url = `https://wa.me/${formattedPhone}?text=${encodeURIComponent(message)}`;
-    
-    // Note: Real automation requires a WhatsApp Business API. 
-    // For now, we provide the link or log the intention.
-    console.log(`Reminder prepared for ${studentName}: ${url}`);
-    
-    return { success: true, url };
-  },
+export const processReminders = async () => {
+  const now = new Date();
+  const windowStart = new Date(now.getTime() + WINDOW_START_HOURS * 3_600_000);
+  const windowEnd = new Date(now.getTime() + WINDOW_END_HOURS * 3_600_000);
 
-  async processDailyReminders(bookings) {
-    const now = new Date();
-    const tomorrow = new Date(now);
-    tomorrow.setDate(now.getDate() + 1);
-    
-    const remindersToSend = bookings.filter(booking => {
-      const bookingDate = new Date(booking.timeSlot);
-      return bookingDate.toDateString() === tomorrow.toDateString() && booking.status === "Confirmado";
-    });
-    
-    const results = [];
-    for (const booking of remindersToSend) {
-      const res = await this.sendWhatsAppReminder(booking);
-      results.push({ bookingId: booking._id, ...res });
-    }
-    
-    return results;
+  let bookings;
+  try {
+    bookings = await Booking.find({
+      status: "Confirmado",
+      email: { $exists: true, $ne: "" },
+      timeSlot: { $gte: windowStart, $lte: windowEnd },
+    }).lean();
+  } catch (err) {
+    console.error("REMINDERS: DB query failed:", err.message);
+    return { processed: 0, sent: 0, failed: 0 };
   }
+
+  if (bookings.length === 0) {
+    console.log("REMINDERS: no bookings in window — nothing to send.");
+    return { processed: 0, sent: 0, failed: 0 };
+  }
+
+  console.log(`REMINDERS: ${bookings.length} booking(s) in window — sending...`);
+
+  let sent = 0;
+  let failed = 0;
+
+  for (const booking of bookings) {
+    try {
+      const result = await sendReminderNotification(booking);
+      if (result.sent) {
+        sent++;
+        console.log(`REMINDERS: ✓ ${booking.bookingCode} → ${result.recipient}`);
+      } else {
+        failed++;
+        console.log(`REMINDERS: – ${booking.bookingCode} skipped (email disabled or missing)`);
+      }
+    } catch (err) {
+      failed++;
+      console.error(`REMINDERS: ✗ ${booking.bookingCode} error:`, err.message);
+    }
+  }
+
+  console.log(`REMINDERS: done — sent: ${sent}, skipped/failed: ${failed}`);
+  return { processed: bookings.length, sent, failed };
 };

@@ -1,7 +1,9 @@
 import "dotenv/config";
+import cron from "node-cron";
 import app from "./src/app.js";
 import connectDB, { disconnectDB } from "./src/config/db.js";
 import { ensureConfiguredAdmin } from "./src/config/adminSeed.js";
+import { processReminders } from "./src/services/reminderService.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const REQUEST_TIMEOUT_MS = Number(process.env.SERVER_REQUEST_TIMEOUT_MS || 15000);
@@ -58,6 +60,19 @@ const launch = async () => {
   try {
     await connectDB();
     await ensureConfiguredAdmin();
+
+    // Daily reminder: runs at 09:00 AM local time.
+    // Finds confirmed bookings with email that start 20–28 hours from now
+    // and sends a "tu clase es mañana" notification.
+    cron.schedule("0 9 * * *", async () => {
+      console.log("CRON: running daily reminder check...");
+      try {
+        await processReminders();
+      } catch (err) {
+        console.error("CRON: reminder job error:", err.message);
+      }
+    });
+    console.log("CRON: daily reminder scheduled for 09:00 AM.");
 
     server = app.listen(PORT, () => {
       logServerBanner();
