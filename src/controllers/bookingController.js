@@ -221,19 +221,19 @@ export const createBooking = async (req, res, next) => {
       status: "Confirmado",
     });
 
-    await appendBookingToSheet(newBooking);
-    const notifications = await sendBookingNotifications({
-      booking: newBooking,
-      event: "created",
-    });
-
+    // Respond immediately after DB insert — side effects run in background
     res.status(201).json({
       success: true,
       message: "Reserva confirmada con exito.",
       data: publicBooking(newBooking),
-      notifications,
+      notifications: null,
       requestId: req.requestId,
     });
+
+    Promise.allSettled([
+      appendBookingToSheet(newBooking),
+      sendBookingNotifications({ booking: newBooking, event: "created" }),
+    ]).catch((err) => console.error("[createBooking side-effects]", err.message));
   } catch (error) {
     if (error?.code === 11000) {
       return res.status(409).json({
@@ -535,20 +535,18 @@ export const rescheduleBooking = async (req, res, next) => {
     booking.status = "Confirmado";
     await booking.save();
 
-    await updateBookingInSheet(booking);
-    const notifications = await sendBookingNotifications({
-      booking,
-      event: "rescheduled",
-      previousTimeSlot,
-    });
-
     res.status(200).json({
       success: true,
       message: "Turno reprogramado.",
       data: publicBooking(booking),
-      notifications,
+      notifications: null,
       requestId: req.requestId,
     });
+
+    Promise.allSettled([
+      updateBookingInSheet(booking),
+      sendBookingNotifications({ booking, event: "rescheduled", previousTimeSlot }),
+    ]).catch((err) => console.error("[rescheduleBooking side-effects]", err.message));
   } catch (error) {
     if (typeof next === "function") {
       return next(error);
@@ -586,20 +584,19 @@ export const cancelBookingClient = async (req, res, next) => {
 
     booking.status = "Cancelado";
     await booking.save();
-    await updateBookingInSheet(booking);
-
-    const notifications = await sendBookingNotifications({
-      booking,
-      event: "cancelled",
-    });
 
     res.status(200).json({
       success: true,
       message: "Turno cancelado.",
       data: publicBooking(booking),
-      notifications,
+      notifications: null,
       requestId: req.requestId,
     });
+
+    Promise.allSettled([
+      updateBookingInSheet(booking),
+      sendBookingNotifications({ booking, event: "cancelled" }),
+    ]).catch((err) => console.error("[cancelBooking side-effects]", err.message));
   } catch (error) {
     if (typeof next === "function") {
       return next(error);

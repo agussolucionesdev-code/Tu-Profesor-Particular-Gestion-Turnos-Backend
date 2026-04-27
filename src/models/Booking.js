@@ -157,6 +157,7 @@ bookingSchema.pre("validate", async function validateBookingDocument() {
 });
 
 bookingSchema.index({ timeSlot: 1, status: 1 });
+bookingSchema.index({ status: 1, timeSlot: 1, endTime: 1 }); // for hasConflict + getAvailability
 bookingSchema.index({ email: 1 });
 bookingSchema.index({ phone: 1 });
 
